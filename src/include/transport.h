@@ -91,4 +91,9 @@ int rofi_transport_sub_exchange_mr_info(rofi_transport_t *rofi, rofi_mr_desc *mr
 int rofi_transport_inner_barrier(rofi_transport_t *rofi, uint64_t *barrier_id, uint64_t *barrier_buf, uint64_t *pes, uint64_t me, uint64_t num_pes);
 int rofi_transport_barrier(rofi_transport_t *rofi);
 
+// FOR_CXI
+// Provider types are defined (enum) in rofi_internal.h
+void rofi_transport_set_provider(rofi_transport_t *);
+// END_FOR_CXI
+
 #endif /* _TRANSPORT_H_ */

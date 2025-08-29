@@ -11,6 +11,18 @@
 
 #include <uthash.h>
 
+// FOR_CXI
+// If defining this variable has not yet been integrated into the configure script, one can do:
+// CFLAGS="-D__OFI_PROV_CXI__ ./configure --prefx=<yadda/yadda> --with-ofi=<yadda/yadda>
+
+#ifdef __OFI_PROV_CXI__
+  #include <stdbool.h>
+  #include <rdma/fi_cxi_ext.h>
+#endif
+
+// END_FOR_CXI
+
+
 #ifndef ROFI_FI_VERSION
 #define ROFI_FI_VERSION FI_VERSION(1, 15)
 #endif
@@ -44,6 +56,16 @@ typedef struct rofi_transport_t rofi_transport_t;
 
 #define ROFI_ASYNC 0x1
 #define ROFI_SYNC 0x2
+
+// FOR_CXI
+// To enable runtime discrimination between different providers
+enum ofi_providers {
+  OFI_PROV_UNKNOWN = 0,
+  OFI_PROV_VERBS_RDM = 1 << 0,
+  OFI_PROV_CXI = 1 << 1,
+  OFI_PROV_OPX = 1 << 2 
+};
+// END_FOR_CXI
 
 typedef struct {
     unsigned long status;
@@ -87,6 +109,31 @@ struct rofi_transport_t {
     pthread_mutex_t lock;
     pthread_rwlock_t mr_lock;
     uint64_t fi_collective;
+
+    // FOR_PMI
+    // The issue is that in PMI, using the same key multiple times 
+    // is undefined behavior (e.g., the value may or may not be updated). We 
+    // found on HPE/Cray systems and some InfiniBand/Verbs systems, the value 
+    // is not updated. Consequently, subsequent attempts to add new memory 
+    // regions (with mr_add) resulted in every memory region using the 
+    // addressing information for the first memory region that was added 
+    // (in this case, the memory region for performing a barrier). The 
+    // temporary solution is to include a mr_count field that is updated each 
+    // time mr_add is called, and is used to create a unique PMI key. Because 
+    // all processes call mr_add, this value is the same across all processes, 
+    // and each process `knows' the current key to use when exchanging 
+    // addressing information. 
+    // TODO: This solution might not work with Lamelar sub-regions! A 
+    // more robust solution may be needed.
+    uint64_t mr_count;
+    // END_FOR_PMI
+
+    // FOR_CXI
+    // To enable differenting providers are runtime, each transport struct 
+    // stores the provider type.
+    enum ofi_providers ofi_provider_type;
+    // END_FOR_CXI
+
 };
 
 extern rofi_transport_t rofi;

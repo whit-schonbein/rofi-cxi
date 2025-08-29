@@ -188,6 +188,33 @@ void rofi_transport_select_provider(struct fi_info *prov, rofi_transport_t *rofi
     }
 }
 
+// FOR_CXI
+// Sets the rofi_transport_t field to indicate the selected provider
+// This can then be used to select a code path at runtime
+void rofi_transport_set_provider(rofi_transport_t *rofi)
+{
+
+  DEBUG_MSG("rofi_transport_set_provider");
+
+  rofi->ofi_provider_type = OFI_PROV_UNKNOWN;
+
+  if (0 == strcmp(rofi->info->fabric_attr->prov_name, "cxi")) {
+    rofi->ofi_provider_type = OFI_PROV_CXI;
+    DEBUG_MSG("Provider set to OFI_PROV_CXI");
+  } else if (0 == strcmp(rofi->info->fabric_attr->prov_name, "opx")) {
+    rofi->ofi_provider_type = OFI_PROV_OPX;
+    DEBUG_MSG("Provider set to OFI_PROV_OPX");
+  } else if (0 == strcmp(rofi->info->fabric_attr->prov_name, "verbs;ofi_rxm")) {
+    rofi->ofi_provider_type = OFI_PROV_VERBS_RDM;
+    DEBUG_MSG("Provider set to OFI_PROV_VERBS_RDM");
+  }
+
+  if (rofi->ofi_provider_type & OFI_PROV_UNKNOWN) {
+    ERR_MSG("set_provider_type: Provider unknown (PROV_UNKNOWN)\n");
+  }
+}
+// END_FOR_CXI
+
 int rofi_transport_init(struct fi_info *hints, rofi_transport_t *rofi, rofi_names_t *prov_names, rofi_names_t *domain_names) {
     DEBUG_MSG("fi_getinfo");
     struct fi_info *prov = fi_allocinfo();
@@ -256,6 +283,20 @@ int rofi_transport_init(struct fi_info *hints, rofi_transport_t *rofi, rofi_name
         return -1;
     }
 
+    // FOR_CXI
+#ifdef __OFI_PROV_CXI__
+    // The CXI tests in libfabric 2.1 follow up the selection of the 
+    // CXI provider with some additional adjustments to the fi_info struct.
+    // It is not clear they are necessary but they are repeated here.
+    // Before these adjustments, fi_getinfo will return cxi providers with all of 
+    // the capabilities (including RMA) except FI_SOURCE and FI_SOURCE_ERR
+    rofi->info->ep_attr->tx_ctx_cnt = rofi->info->domain_attr->tx_ctx_cnt;
+    rofi->info->ep_attr->rx_ctx_cnt = rofi->info->domain_attr->rx_ctx_cnt;
+    rofi->info->caps |= FI_SOURCE | FI_SOURCE_ERR;
+    rofi->info->rx_attr->caps |= FI_SOURCE | FI_SOURCE_ERR;
+#endif
+    // END_FOR_CXI
+
     ret = rofi_transport_init_fabric_resources(rofi);
     if (ret) {
         // already would have printed the error.
@@ -306,6 +347,13 @@ int rofi_transport_init(struct fi_info *hints, rofi_transport_t *rofi, rofi_name
         // already would have printed the error.
         return ret;
     }
+
+    // FOR_PMI
+    // This is part of the solution to ensuring unique keys for the PMI KVS 
+    // when exchanging addressing information after mr_add
+    rofi->mr_count = 0;
+    // END_FOR_PMI
+    
     return 0;
 }
 
@@ -538,9 +586,19 @@ int rofi_transport_progress(rofi_transport_t *rofi) {
             if (ret > 0) {
                 const char *errmsg = fi_cq_strerror(rofi->cq, ebuf.prov_errno, ebuf.err_data, NULL, 0);
                 const char *errmsg1 = fi_cq_strerror(rofi->cq, ebuf.err, ebuf.err_data, NULL, 0);
+                // FOR_CXI
+                // Because it is based on libfabric 1.15.2, HPE/Cray libfabric does not have the 
+                // src_addr field in the fi_cq_err_entry struct
+#ifdef __OFI_PROV_CXI__
+                ERR_MSG("ret: %d context: %p flags %llu len: %d buf: %p data: %llu tag %llu olen %llu err %d prov_err %d err_data %p err_data_size %llu %s %s", ret,
+                            ebuf.op_context,ebuf.flags,ebuf.len,ebuf.buf,ebuf.data, ebuf.tag,ebuf.olen,ebuf.err,ebuf.prov_errno,ebuf.err_data,ebuf.err_data_size,errmsg, errmsg1
+                );
+#else // VERBS
                 ERR_MSG("ret: %d context: %p flags %llu len: %d buf: %p data: %llu tag %llu olen %llu err %d prov_err %d err_data %p err_data_size %llu src_addr %d %s %s", ret,
                             ebuf.op_context,ebuf.flags,ebuf.len,ebuf.buf,ebuf.data, ebuf.tag,ebuf.olen,ebuf.err,ebuf.prov_errno,ebuf.err_data,ebuf.err_data_size,ebuf.src_addr,errmsg, errmsg1
                 );
+#endif
+                // END_FOR_CXI
                 err = ebuf.err;
             }
             else if (ret < 0) {
@@ -570,9 +628,20 @@ int rofi_transport_locked_ctx_check_err(rofi_transport_t *rofi, int err, struct 
                 int ret = fi_cq_readerr(rofi->cq, (void *)&ebuf, 0);
                 const char *errmsg = fi_cq_strerror(rofi->cq, ebuf.prov_errno, ebuf.err_data, NULL, 0);
                 const char *errmsg1 = fi_cq_strerror(rofi->cq, ebuf.err, ebuf.err_data, NULL, 0);
+                // FOR_CXI
+                // Because it is based on libfabric 1.15.2, HPE/Cray libfabric does not have the 
+                // src_addr field in the fi_cq_err_entry struct
+#ifdef __OFI_PROV_CXI__
+                ERR_MSG("ret: %d context: %p flags %llu len: %d buf: %p data: %llu tag %llu olen %llu err %d prov_err %d err_data %p err_data_size %llu %s %s", ret,
+                            ebuf.op_context,ebuf.flags,ebuf.len,ebuf.buf,ebuf.data, ebuf.tag,ebuf.olen,ebuf.err,ebuf.prov_errno,ebuf.err_data,ebuf.err_data_size,errmsg, errmsg1
+                );
+#else // VERBS
                 ERR_MSG("ret: %d context: %p flags %llu len: %d buf: %p data: %llu tag %llu olen %llu err %d prov_err %d err_data %p err_data_size %llu src_addr %d %s %s", ret,
                             ebuf.op_context,ebuf.flags,ebuf.len,ebuf.buf,ebuf.data, ebuf.tag,ebuf.olen,ebuf.err,ebuf.prov_errno,ebuf.err_data,ebuf.err_data_size,ebuf.src_addr,errmsg, errmsg1
                 );
+#endif
+                // END_FOR_CXI
+
                 // struct fi_cq_err_entry ebuf = {0};
                 // int ret = fi_cq_readerr(rofi->cq, (void *)&ebuf, 0);
                 // if (ret > 0 && ebuf.err == -FI_EACCES) {
@@ -595,9 +664,20 @@ int rofi_transport_locked_ctx_check_err(rofi_transport_t *rofi, int err, struct 
                 int ret = fi_cq_readerr(rofi->cq, (void *)&ebuf, 0);
                 const char *errmsg = fi_cq_strerror(rofi->cq, ebuf.prov_errno, ebuf.err_data, NULL, 0);
                 const char *errmsg1 = fi_cq_strerror(rofi->cq, ebuf.err, ebuf.err_data, NULL, 0);
-                ERR_MSG("ret: %d context: %p flags %llu len: %d buf: %p data: %llu tag %llu olen %llu err %d prov_err %d err_data %p err_data_size %llu src_addr %d %s %s", ret,
-                            ebuf.op_context,ebuf.flags,ebuf.len,ebuf.buf,ebuf.data, ebuf.tag,ebuf.olen,ebuf.err,ebuf.prov_errno,ebuf.err_data,ebuf.err_data_size,ebuf.src_addr,errmsg,errmsg1
+                
+                // FOR_CXI
+                // Because it is based on libfabric 1.15.2, HPE/Cray libfabric does not have the 
+                // src_addr field in the fi_cq_err_entry struct
+#ifdef __OFI_PROV_CXI__
+                ERR_MSG("ret: %d context: %p flags %llu len: %d buf: %p data: %llu tag %llu olen %llu err %d prov_err %d err_data %p err_data_size %llu %s %s", ret,
+                            ebuf.op_context,ebuf.flags,ebuf.len,ebuf.buf,ebuf.data, ebuf.tag,ebuf.olen,ebuf.err,ebuf.prov_errno,ebuf.err_data,ebuf.err_data_size,errmsg, errmsg1
                 );
+#else // VERBS
+                ERR_MSG("ret: %d context: %p flags %llu len: %d buf: %p data: %llu tag %llu olen %llu err %d prov_err %d err_data %p err_data_size %llu src_addr %d %s %s", ret,
+                            ebuf.op_context,ebuf.flags,ebuf.len,ebuf.buf,ebuf.data, ebuf.tag,ebuf.olen,ebuf.err,ebuf.prov_errno,ebuf.err_data,ebuf.err_data_size,ebuf.src_addr,errmsg, errmsg1
+                );
+#endif
+                // END_FOR_CXI
             }
             return err;
         }
@@ -945,11 +1025,33 @@ int rofi_transport_exchange_mr_info(rofi_transport_t *rofi, rofi_mr_desc *mr) {
     }
 
     struct fi_rma_iov rma_iov;
+
+    // FOR_CXI
+    // CXI uses offset addressing rather than virtual addresses
+    // So if the provider is CXI, rma_iov.addr should be 0
+    // This will results in transport_put and transport_get passing in 
+    // just th eoffset as the uint64_t *addr field of fi_write or fi_read
+#ifdef __OFI_PROV_CXI__
+    rma_iov.addr = 0;
+#else // verbs
     rma_iov.addr = (uint64_t)mr->start;
+#endif
+    // END_FOR_CXI
+
     rma_iov.key = fi_mr_key(mr->fid);
     DEBUG_MSG("Exchanging MR Info (key: 0x%lx, addr: 0x%lx)....", rma_iov.key, rma_iov.addr);
 
-    int ret = rt_exchange_data("mr_info", &rma_iov, sizeof(struct fi_rma_iov), mr->iov, rofi->desc.nid, rofi->desc.nodes);
+    // FOR_PMI
+    // This is a prototype solution to the PMI unique key problem
+    // rt_exchange_data creates a full key for use with PMI
+    // here we create a unique partial key and pass it to rt_exchange_data
+    // TODO: The current implementation may not generalize!
+    char data_name[] = "mr_info";
+    char partial_pmi_key[64];
+    snprintf(partial_pmi_key, sizeof(partial_pmi_key), "%s-%lu", data_name, rofi->mr_count++); 
+    int ret = rt_exchange_data(partial_pmi_key, &rma_iov, sizeof(struct fi_rma_iov), mr->iov, rofi->desc.nid, rofi->desc.nodes);
+    // END_FOR_PMI
+    
     if (ret) {
         ERR_MSG("Error exchanging info for memory region alloc buffer. Aborting!");
         return ret;

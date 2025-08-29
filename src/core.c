@@ -271,6 +271,42 @@ int rofi_init_internal(char *provs, char *domains) {
         return EXIT_FAILURE;
     }
 
+    // FOR_CXI
+    // Note: we currently have to select hints at compile time because we 
+    // cannot use the runtime method before a provider is selected.
+
+#ifdef __OFI_PROV_CXI__
+
+    // The following hints are based on working through the code path 
+    // for the simple_write rma test included with the CXI provider in 
+    // libfabric v2.1
+
+    // If the provider name is given explicitly, only cxi providers will be returned
+    // This will result in the provider name given in rofi_init being ignored unless it is "cxi"
+    // (if != "cxi", the provider will not be found, and it will default to the first provider, which is CXI)
+    hints->fabric_attr->prov_name = strdup("cxi"); // limits returned providers to cxi only
+    hints->domain_attr->mr_mode = FI_MR_ENDPOINT | FI_MR_ALLOCATED | FI_MR_PROV_KEY; // FI_MR_ENDPOINT is necessary, FI_MR_ALLOCATED can be removed if on-demand paging is enabled; FI_MR_PROV_KEY is required for consistency with the Verbs provider (i.e., the provider generates MR keys)
+    hints->domain_attr->data_progress = FI_PROGRESS_MANUAL;
+    hints->domain_attr->control_progress = FI_PROGRESS_MANUAL; 
+    hints->tx_attr->size = 512;
+    // FI_EP_RDM is explicit in the Verbs hints, but this is the only 
+    // endpoint type in CXI so is not needed
+    //hints->ep_attr->type = FI_EP_RDM;
+    // FI_DELIVERY_COMPLETE is included in the Verbs hints
+    // CXI defaults to FI_TRANSMIT_COMPLETE (and is the recommended setting).
+    // Switching to FI_DELIVERY_COMPLETE does not make a difference for passing 
+    // the ROFI tests.
+    //hints->tx_attr->op_flags = FI_DELIVERY_COMPLETE; 
+
+    // TBD: message ordering requirements (tx_attr and rx_attr)
+    // Through trial and error, we determined This will make most of them NO;
+    // hints->tx_attr->msg_order = 0;
+
+    DEBUG_MSG("ROFI Compiled for CXI support");
+
+#else // VERBS
+
+    // The following are the original Verbs provider hints
     hints->caps = FI_RMA | FI_ATOMIC | FI_COLLECTIVE | FI_MSG;
     hints->addr_format = FI_FORMAT_UNSPEC;
     hints->domain_attr->resource_mgmt = FI_RM_ENABLED;
@@ -280,6 +316,10 @@ int rofi_init_internal(char *provs, char *domains) {
     hints->mode = FI_CONTEXT;
     hints->ep_attr->type = FI_EP_RDM;
     hints->tx_attr->op_flags = FI_DELIVERY_COMPLETE; // maybe need to change this to FI_INJECT_COMPLETE or FI_TRANSMIT_COMPLETE
+
+#endif
+
+// END_FOR_CXI
 
     rofi_names_t *prov_names = NULL;
     if (provs) {
