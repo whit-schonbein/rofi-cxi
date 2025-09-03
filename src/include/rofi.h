@@ -24,4 +24,11 @@ void rofi_barrier(void);
 int rofi_wait(void);
 void *rofi_get_remote_addr(void *, unsigned int);
 void *rofi_get_local_addr_from_remote_addr(void *, unsigned int);
+
+// FOR_CXI
+#ifdef __OFI_PROV_CXI__
+void rofi_msg_barrier_linear(void);
+#endif
+// END_FOR_CXI
+
 #endif

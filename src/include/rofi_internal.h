@@ -144,6 +144,13 @@ unsigned int rofi_get_size_internal(void);
 unsigned int rofi_get_id_internal(void);
 int rofi_flush_internal(void);
 void rofi_barrier_internal(void);
+
+// FOR_CXI
+#ifdef __OFI_PROV_CXI__
+void rofi_msg_barrier_linear_internal(void);
+#endif
+// END_FOR_CXI
+
 int rofi_put_internal(void *, void *, size_t, unsigned int, unsigned long);
 int rofi_get_internal(void *, void *, size_t, unsigned int, unsigned long);
 int rofi_send_internal(unsigned int, void *, size_t, unsigned long);

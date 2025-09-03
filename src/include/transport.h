@@ -96,4 +96,11 @@ int rofi_transport_barrier(rofi_transport_t *rofi);
 void rofi_transport_set_provider(rofi_transport_t *);
 // END_FOR_CXI
 
+// FOR_CXI
+// A FI_MSG based barrier
+#ifdef __OFI_PROV_CXI__
+int rofi_transport_msg_barrier_linear(rofi_transport_t *rofi);
+#endif
+// END_FOR_CXI
+
 #endif /* _TRANSPORT_H_ */

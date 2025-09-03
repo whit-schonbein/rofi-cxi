@@ -277,6 +277,8 @@ int rofi_init_internal(char *provs, char *domains) {
 
 #ifdef __OFI_PROV_CXI__
 
+    DEBUG_MSG("Process %d requesting CXI provider", rofi.desc.nid);
+
     // The following hints are based on working through the code path 
     // for the simple_write rma test included with the CXI provider in 
     // libfabric v2.1
@@ -390,7 +392,19 @@ int rofi_init_internal(char *provs, char *domains) {
         rofi.sub_alloc_buf[i].addr = 0;
     }
     fi_freeinfo(hints);
-    rofi_transport_barrier(&rofi);
+    
+    // FOR_CXI
+#ifdef __OFI_PROV_CXI__
+    // We note that on newer versions of the Slingshot software stack (e.g., v2.1), invoking the default RMA-based 
+    // ROFI barrier with the target waiting for their local buffer to be updated. This could be due to the buffers 
+    // used by the RMA barrier not being fully registered, although no errors are reported by CXI.
+    // Substituting a barrer based on FI_MSG operations avoids the issue.
+    rofi_transport_msg_barrier_linear(&rofi);
+#else // Verbs
+  rofi_transport_barrier(&rofi);
+#endif
+    // END_FOR_CXI
+
     return 0;
 
 err:

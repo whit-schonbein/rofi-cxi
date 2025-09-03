@@ -348,6 +348,12 @@ int rofi_transport_init(struct fi_info *hints, rofi_transport_t *rofi, rofi_name
         return ret;
     }
 
+    // FOR_CXI
+    // This is to enable runtime divergence in code paths based on provider, so 
+    // it is not specific to CXI.
+    rofi_transport_set_provider(rofi);
+    // END_FOR_CXI
+
     // FOR_PMI
     // This is part of the solution to ensuring unique keys for the PMI KVS 
     // when exchanging addressing information after mr_add
@@ -448,6 +454,26 @@ int rofi_transport_init_endpoint_resources(rofi_transport_t *rofi) {
         return ret;
     }
 
+    // FOR_CXI
+    // The following is primarily to ensure FI_MSG works under CXI
+    // The issue is that some hints are adjusted after the provider is selected, and 
+    // the way they are adjusted may differ between Verbs and CXI
+
+#ifdef __OFI_PROV_CXI__
+    
+    // Original rx_attr->caps uses just FI_RECV; this causes PTLTE_NOT_FOUND errors on querying CQ
+    // Changing it to FI_MSG removes them.
+    //rofi->info->rx_attr->caps = FI_RECV | rofi->fi_collective; // to drive progress
+    rofi->info->rx_attr->caps = FI_MSG | rofi->fi_collective; // to drive progress
+    // The following is in the libfabric v2.1 CXI tests, set after the provider is selected
+    rofi->info->ep_attr->tx_ctx_cnt = rofi->info->domain_attr->tx_ctx_cnt;
+    rofi->info->ep_attr->rx_ctx_cnt = rofi->info->domain_attr->rx_ctx_cnt;
+    // For CXI, the provider sets these to 'no' so if we want them we have to set them here
+    rofi->info->caps |= FI_SOURCE | FI_SOURCE_ERR;
+    rofi->info->rx_attr->caps |= FI_SOURCE | FI_SOURCE_ERR;
+
+#else
+    // The following are from the original verbs code
     rofi->info->ep_attr->tx_ctx_cnt = 0;
     rofi->info->caps = FI_RMA | FI_WRITE | FI_READ | FI_REMOTE_WRITE | FI_REMOTE_READ | rofi->fi_collective;
     rofi->info->tx_attr->op_flags = FI_DELIVERY_COMPLETE; // FI_TRANSMIT_COMPLETE fails, FI_DELIVERY_COMPLETE works but I dont see a difference?
@@ -458,6 +484,9 @@ int rofi_transport_init_endpoint_resources(rofi_transport_t *rofi) {
     rofi->info->tx_attr->size = 1024;
     rofi->info->tx_attr->caps = rofi->info->caps;
     rofi->info->rx_attr->caps = FI_RECV | rofi->fi_collective; // to drive progress
+#endif
+
+  // END_FOR_CXI
 
     DEBUG_MSG("FI_ENDPOINT");
     ret = fi_endpoint(rofi->domain, rofi->info, &rofi->ep, NULL);
@@ -861,6 +890,146 @@ int rofi_transport_wait_on_context_comp(rofi_transport_t *rofi, void *context) {
         }
     }
 }
+
+// FOR_CXI
+//
+// The following code implements a simple linear barrier using FI_MSG operations. It is an 
+// alternative to the default ROFI RMA-based barrier, which has been observed to hang when 
+// called during transport initialization (in core.c) immediately after registering the 
+// memory used by that barrier. The issue may involve a race condition where the barrier 
+// is attempting to target memory that has not yet been fully registered. Substituting 
+// the FI_MSG based barrier solves the problem.
+//
+// -- ROFI configures the CQ using FI_SELECTIVE_COMPLETION, and the CQ is used only for 
+//    reporting errors. The new await_cq_completion call waits on a CQ for an event besides an 
+//    error. The barrier implementation uses fi_sendmsg and fi_recvmsg because they are the 
+//    only FI_MSG calls that work with FI_SELECTIVE_COMPLETION to force CQ events.
+// 
+// -- Note: Getting FI_MSG operations working on CXI requires changes elswhere in the code base. Specifically, 
+//    in transport.c some settings used fi_info struct for selecting the provider are adjusted after the 
+//    provider is selected, and these changes are not compatible with FI_MSG ops on CXI. See 
+//    transport.c for more info.
+//
+
+// TODO: Add timeout.
+int rofi_transport_await_cq_completion(struct fid_cq *cq, struct fi_cq_entry *cqe, const int num_entries) {
+  int ret;
+  int count = 0;
+
+  while (count < num_entries) {
+    do {
+      ret = fi_cq_read(cq, cqe, 1);
+    } while (ret == -FI_EAGAIN);
+
+    if (ret != 1) {
+      ROFI_TRANSPORT_ERR_MSG("fi_cq_read", ret);
+      struct fi_cq_err_entry ebuf = {0};
+      int ret = fi_cq_readerr(cq, (void *)&ebuf, 0);
+      if (ret > 0) {
+        const char *errmsg = fi_cq_strerror(cq, ebuf.prov_errno, ebuf.err_data, NULL, 0);
+        ERR_MSG("Error: %s\n", errmsg);
+        abort();
+        return ret;
+      }
+    }
+    count++;
+  }
+  return 0;
+}
+
+// Linear (1:N followed by N:1) barrier
+int rofi_transport_msg_barrier_linear(rofi_transport_t *rofi) {
+  int ret;
+  unsigned int my_rank = rofi->desc.nid;
+  unsigned int num_ranks = rofi->desc.nodes;
+
+  uint8_t barrier_send_buf[1];
+  uint8_t barrier_recv_buf[1];
+  *barrier_send_buf = 5;
+  *barrier_recv_buf = 0;
+
+  // all PEs send the same thing; only the address may change
+  struct iovec iov_send = {&barrier_send_buf, sizeof(uint8_t)};
+  struct fi_msg msg_send = {};
+  msg_send.msg_iov = &iov_send;
+  msg_send.iov_count = 1;
+
+  // all PEs recv to the same location (b/c we don't care about the data 
+  // getting clobbered), but the address may change
+  struct iovec iov_recv = {&barrier_recv_buf, sizeof(uint8_t)};
+  struct fi_msg msg_recv = {};
+  msg_recv.msg_iov = &iov_recv;
+  msg_recv.iov_count = 1;
+
+  struct fi_cq_entry cqe = {};
+
+  DEBUG_MSG("rank %u entering linear barrier with recv_buf = %u", my_rank, *barrier_recv_buf);
+
+  if (my_rank > 0) {
+    // each rank besides 0 posts send to 0
+    msg_send.addr = (rofi->remote_addrs)[0];
+    ret = fi_sendmsg(rofi->ep, &msg_send, 0);
+    if (ret != 0) {
+      ROFI_TRANSPORT_ERR_MSG("fi_send", ret);
+      struct fi_cq_err_entry ebuf = {0};
+      int ret = fi_cq_readerr(rofi->cq, (void *)&ebuf, 0);
+      if (ret > 0) {
+        const char *errmsg = fi_cq_strerror(rofi->cq, ebuf.prov_errno, ebuf.err_data, NULL, 0);
+        ERR_MSG("Error: %s\n", errmsg);
+        abort();
+        return ret;
+      }
+    }
+
+    // each rank waits to hear back from 0
+    msg_recv.addr = (rofi->remote_addrs)[0];
+    ret = fi_recvmsg(rofi->ep, &msg_recv, FI_COMPLETION);
+    // await CQ for recv entry
+    ret = rofi_transport_await_cq_completion(rofi->cq, &cqe, 1);
+  } else {
+    // rank 0 receives from each other rank
+    for (int src = 1; src < num_ranks; ++src) {
+      msg_recv.addr = (rofi->remote_addrs)[src];
+      ret = fi_recvmsg(rofi->ep, &msg_recv, FI_COMPLETION);
+      if (ret != 0) {
+        ROFI_TRANSPORT_ERR_MSG("fi_recv", ret);
+        struct fi_cq_err_entry ebuf = {0};
+        int ret = fi_cq_readerr(rofi->cq, (void *)&ebuf, 0);
+        if (ret > 0) {
+          const char *errmsg = fi_cq_strerror(rofi->cq, ebuf.prov_errno, ebuf.err_data, NULL, 0);
+          ERR_MSG("Error: %s\n", errmsg);
+          abort();
+          return ret;
+        }
+      }
+    }
+    // await recvs
+    ret = rofi_transport_await_cq_completion(rofi->cq, &cqe, num_ranks-1);
+    // rank 0 sends back to each other rank
+    for (int dst = 1; dst < num_ranks; ++dst) {
+      msg_send.addr = (rofi->remote_addrs)[dst];
+      ret = fi_sendmsg(rofi->ep, &msg_send, 0);
+      if (ret != 0) {
+        ROFI_TRANSPORT_ERR_MSG("fi_send", ret);
+        struct fi_cq_err_entry ebuf = {0};
+        int ret = fi_cq_readerr(rofi->cq, (void *)&ebuf, 0);
+        if (ret > 0) {
+          const char *errmsg = fi_cq_strerror(rofi->cq, ebuf.prov_errno, ebuf.err_data, NULL, 0);
+          ERR_MSG("Error: %s\n", errmsg);
+          abort();
+          return ret;
+        }
+      }
+    }
+  }
+
+  DEBUG_MSG("rank %u exited linear barrier with recv_buf = %u", my_rank, *barrier_recv_buf);
+
+  return 0;
+}
+// END_FOR_CXI
+
+
 
 int rofi_transport_put_inject(rofi_transport_t *rofi, struct fi_rma_iov *rma_iov, fi_addr_t pe, const void *src_addr, size_t len) {
     pthread_mutex_lock(&rofi->lock);
