@@ -335,6 +335,22 @@ void rofi_barrier(void) {
 }
 
 /**
+ * @brief ROFI Global Barrier (FI_MSG based, Linear)
+ *
+ * This functon blocks until all processes have called `rofi_msg_barrier_linear()'. 
+ * TODO: If we truely need different barrier implementations for different providers 
+ * (specifically, this has been added for use with CXI provider, where the original 
+ * FI_RMA based barrier does not work), then the code divergence should probably be 
+ * in the rofi_barrier() transport code).
+ */
+void rofi_msg_barrier_linear(void) {
+    assert(rofi.desc.status == ROFI_STATUS_ACTIVE);
+    DEBUG_MSG("Process %u/%u entering barrier...", rofi.desc.nid, rofi.desc.nodes);
+    rofi_msg_barrier_linear_internal();
+    DEBUG_MSG("Process %u/%u leaving barrier...", rofi.desc.nid, rofi.desc.nodes);
+}
+
+/**
  * @brief ROFI Memory Region allocation
  *
  * This function allocates a memory region of \p size bytes and registers it to be accessible

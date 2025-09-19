@@ -110,6 +110,14 @@ void rofi_barrier_internal(void) {
     rofi_transport_barrier(&rofi);
 }
 
+// FOR_CXI
+// Works with the rofi_msg_barrier_internal api.c call to expose the FI_MSG-based barrier 
+// to ROFI apps. 
+void rofi_msg_barrier_linear_internal(void) {
+  rofi_transport_msg_barrier_linear(&rofi);
+}
+// END_FOR_CXI
+
 int rofi_put_internal(void *dst, void *src, size_t size, unsigned int id, unsigned long flags) {
     rofi_mr_desc *el = mr_get(&rofi, dst);
     struct fi_rma_iov rma_iov;
