@@ -100,6 +100,8 @@ void rofi_transport_set_provider(rofi_transport_t *);
 // A FI_MSG based barrier
 #ifdef __OFI_PROV_CXI__
 int rofi_transport_msg_barrier_linear(rofi_transport_t *rofi);
+int rofi_transport_await_cq_completion(struct fid_cq *cq, struct fi_cq_entry *cqe, const int num_entries);
+int rofi_transport_await_cntr_completion_simple(struct fid_cntr *cntr, uint64_t expected_value);
 #endif
 // END_FOR_CXI
 

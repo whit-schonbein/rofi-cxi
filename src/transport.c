@@ -286,7 +286,8 @@ int rofi_transport_init(struct fi_info *hints, rofi_transport_t *rofi, rofi_name
     // FOR_CXI
 #ifdef __OFI_PROV_CXI__
     // The CXI tests in libfabric 2.1 follow up the selection of the 
-    // CXI provider with some additional adjustments to the fi_info struct.
+    // CXI provider with some additional adjustments to the fi_info struct 
+    // before initializing the fabric, creating the endpoint, etc.
     // It is not clear they are necessary but they are repeated here.
     // Before these adjustments, fi_getinfo will return cxi providers with all of 
     // the capabilities (including RMA) except FI_SOURCE and FI_SOURCE_ERR
@@ -455,25 +456,15 @@ int rofi_transport_init_endpoint_resources(rofi_transport_t *rofi) {
     }
 
     // FOR_CXI
-    // The following is primarily to ensure FI_MSG works under CXI
-    // The issue is that some hints are adjusted after the provider is selected, and 
-    // the way they are adjusted may differ between Verbs and CXI
+    // The original verbs code (in the #else branch, below) makes adjustments to the 
+    // fi_info struct containing information for the selected provider at this point. This is not 
+    // required for CXI, so this directive removes it for CXI.
 
 #ifdef __OFI_PROV_CXI__
     
-    // Original rx_attr->caps uses just FI_RECV; this causes PTLTE_NOT_FOUND errors on querying CQ
-    // Changing it to FI_MSG removes them.
-    //rofi->info->rx_attr->caps = FI_RECV | rofi->fi_collective; // to drive progress
-    rofi->info->rx_attr->caps = FI_MSG | rofi->fi_collective; // to drive progress
-    // The following is in the libfabric v2.1 CXI tests, set after the provider is selected
-    rofi->info->ep_attr->tx_ctx_cnt = rofi->info->domain_attr->tx_ctx_cnt;
-    rofi->info->ep_attr->rx_ctx_cnt = rofi->info->domain_attr->rx_ctx_cnt;
-    // For CXI, the provider sets these to 'no' so if we want them we have to set them here
-    rofi->info->caps |= FI_SOURCE | FI_SOURCE_ERR;
-    rofi->info->rx_attr->caps |= FI_SOURCE | FI_SOURCE_ERR;
+  ;
 
 #else
-    // The following are from the original verbs code
     rofi->info->ep_attr->tx_ctx_cnt = 0;
     rofi->info->caps = FI_RMA | FI_WRITE | FI_READ | FI_REMOTE_WRITE | FI_REMOTE_READ | rofi->fi_collective;
     rofi->info->tx_attr->op_flags = FI_DELIVERY_COMPLETE; // FI_TRANSMIT_COMPLETE fails, FI_DELIVERY_COMPLETE works but I dont see a difference?
@@ -800,6 +791,7 @@ int rofi_transport_locked_wait_on_cntr(rofi_transport_t *rofi, uint64_t *pending
 }
 
 int rofi_transport_wait_on_cntr(rofi_transport_t *rofi, uint64_t *pending_cntr, struct fid_cntr *cntr) {
+
     uint64_t cnt = *pending_cntr;
     uint64_t prev_cnt = cnt;
     pthread_mutex_lock(&rofi->lock);
@@ -911,7 +903,22 @@ int rofi_transport_wait_on_context_comp(rofi_transport_t *rofi, void *context) {
 //    transport.c for more info.
 //
 
-// TODO: Add timeout.
+// A simplified (non-thread safe) await counter function
+// It was used for debugging, and perhaps could be used for benchmarking the overheads of the 
+// more complex thread safe version
+int rofi_transport_await_cntr_completion_simple(struct fid_cntr *cntr, uint64_t expected_value)
+{
+	  uint64_t value;
+
+    do {
+      value = fi_cntr_read(cntr);
+	  } while (value < expected_value);
+    
+    return 0;
+}
+
+// Currently ROFI checks the CQ only for errors. For the FI_MSG based barrier,
+// we need to check the CQ for send/recv completion.
 int rofi_transport_await_cq_completion(struct fid_cq *cq, struct fi_cq_entry *cqe, const int num_entries) {
   int ret;
   int count = 0;
@@ -1090,6 +1097,11 @@ int rofi_transport_put(rofi_transport_t *rofi, struct fi_rma_iov *rma_iov, uint6
 }
 
 int rofi_transport_put_wait_all(rofi_transport_t *rofi) {
+    // FOR_CXI
+    // The simple version is not thread-safe and can be used to benchmark the 
+    // cost of a thread-safe wait
+    //return rofi_transport_await_cntr_completion_simple(rofi->put_cntr, rofi->pending_put_cntr);
+    // END_CXI
     return rofi_transport_wait_on_cntr(rofi, &rofi->pending_put_cntr, rofi->put_cntr);
 }
 
@@ -1146,6 +1158,11 @@ int rofi_transport_get(rofi_transport_t *rofi, struct fi_rma_iov *rma_iov, uint6
 }
 
 int rofi_transport_get_wait_all(rofi_transport_t *rofi) {
+    // FOR_CXI
+    // The simple version is not thread-safe and can be used to benchmark the 
+    // cost of a thread-safe wait
+    //return rofi_transport_await_cntr_completion_simple(rofi->get_cntr, rofi->pending_get_cntr);
+    // END_CXI
     return rofi_transport_wait_on_cntr(rofi, &rofi->pending_get_cntr, rofi->get_cntr);
 }
 
