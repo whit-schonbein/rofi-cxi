@@ -298,7 +298,7 @@ int rofi_init_internal(char *provs, char *domains) {
     hints->domain_attr->mr_mode = FI_MR_ENDPOINT | FI_MR_ALLOCATED | FI_MR_PROV_KEY; // FI_MR_ENDPOINT is necessary, FI_MR_ALLOCATED can be removed if on-demand paging is enabled; FI_MR_PROV_KEY is required for consistency with the Verbs provider (i.e., the provider generates MR keys)
     hints->domain_attr->data_progress = FI_PROGRESS_MANUAL;
     hints->domain_attr->control_progress = FI_PROGRESS_MANUAL; 
-    hints->tx_attr->size = 512;
+    hints->tx_attr->size = 4096;  // this can probably be much larger... Will crash if more than this numnber of Tx ops are posted
     // FI_EP_RDM is explicit in the Verbs hints, but this is the only 
     // endpoint type in CXI so is not needed
     //hints->ep_attr->type = FI_EP_RDM;
@@ -404,7 +404,7 @@ int rofi_init_internal(char *provs, char *domains) {
     // FOR_CXI
 #ifdef __OFI_PROV_CXI__
     // We note that on newer versions of the Slingshot software stack (e.g., v2.1), invoking the default RMA-based 
-    // ROFI barrier with the target waiting for their local buffer to be updated. This could be due to the buffers 
+    // ROFI barrier hangs with the target waiting for their local buffer to be updated. This could be due to the buffers 
     // used by the RMA barrier not being fully registered, although no errors are reported by CXI.
     // Substituting a barrer based on FI_MSG operations avoids the issue.
     rofi_transport_msg_barrier_linear(&rofi);
